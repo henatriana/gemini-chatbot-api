@@ -5,59 +5,25 @@ import express from "express";
 import multer from "multer";
 import fs from "fs/promises";
 import cors from "cors";
+import { text } from "stream/consumers";
 
 const app = express();
 const upload = multer();
 const ai = new GoogleGenAI({});
 
-//Inisialisasi Model AI
 const geminiModels = {
-  text: "gemini-2.5-flash-lite",
-  image: "gemini-2.5-flash",
-  audio: "gemini-2.5-flash-lite",
-  document: "gemini-2.5-flash-lite"
+  text: 'gemini-2.5-flash-lite',
+  chat: 'gemini-2.5-pro',
+  image: 'gemini-2.5-flash',
+  audio: 'gemini-2.5-flash-lite',
+  document: 'gemini-2.5-flash-lite'
 };
 
-//inisialisasi aplikasi back-end/server
-app.use(cors()); // .use() --> panggil/bikin middleware
-app.use(express.json()); // untuk membolehkan kita menggunakan 'Content-type: application/json' di header
+app.use(cors()); 
+app.use(express.json());
+app.use(express.static('public')); // ketika diakses di localhost akan langsung mengarah ke folder public
 
-// inisialisasi rout
-// .get(), .post(), .put(), .patch(), .delete () --> Sering dipakai
-// .option() --> lebih jarang diapakai, karena lebih ke flashlight (untuk CORS umumnya)
-
-function extractText(resp) {
-  try {
-    const text = resp?.response?.candidate?.[0]?.content?.parts?.[0]?.text ?? 
-                resp?.candidate?.[0]?.content?.parts?.[0]?.text ??
-                resp?.response?.candidates?.[0]?.content?.text;
-    
-    return text ?? JSON.stringify(resp, null, 2);
-  } catch (err) {
-    console.error("Error extracting text:", err);
-    return JSON.stringify(resp, null, 2);
-  }
-};
-
-// 1. Generate Text
 app.post('/generate-text', async (req, res) => {
-  //handle bagaiamana request diterima oleh user
-  // const { body } = req; // object distructuring
-
-  // // guard clause --> satpam
-  // if (!body) {
-  //   // jika body0nya tidak ada isinya
-  //   res.status(400).send("Tidak ada payload yang dikirim!");
-  //   return;
-  // }
-
-  // // satpam untuk cek tipe data dari body-nya
-  // // req.body = [] // typeof --> object; Array.isArray(isi) //true
-  // // req.body = {} // tupeof --> object; Array.isArray(isi) //false
-  // if (typeof body !== 'object') {
-  //   res.status(400).send("Tipe payload-nya tidak sesuai");
-  //   return;
-  // }
 
   const { message } = req.body || {};
 
@@ -77,72 +43,70 @@ app.post('/generate-text', async (req, res) => {
   
 });
 
+app.post('/chat', async (req, res) => {
+  const { conversation } = req.body;
 
-// 2. Generate Image
-app.post('/generate-from-image', upload.single('image'), async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    const imageBase64 = req.file.buffer.toString('base64');
-    const resp = await ai.models.generateContent({
-      contents: [
-        { text: prompt  },
-        { inlineData: { mimeType: req.file.mimetype, data: imageBase64 } }
-      ],
-      model: geminiModels.image
+  // Guard clause 1 -- cek conversation-nya itu array atau bukan
+  if (!conversation || !Array.isArray(conversation)) {
+    res.status(400).json( { 
+      success: false,
+      data: null,
+      message: 'Percakapan tidak valid!' 
     });
-    res.json({ result: extractText(resp)});
-  } catch (err) {
-    res.status(500).json({ error: err.message});
+  }
+
+  // Guard clause 2 -- cek integritas data
+  let dataIsInvalid = false; // sementic
+
+  [].forEach(item => {
+    if (!item) {
+      dataIsInvalid = true;
+    } else if (typeof item !== 'object') {
+      dataIsInvalid = true;
+    } else if (!item.role || !item.message) {
+      dataIsInvalid = true;
+    }
+  });
+
+  if (dataIsInvalid) {
+   return res.status(400).json( { 
+      success: false,
+      data: null,
+      message: 'Ada data invalid pada percakapan yang dikirim.'
+    });
+  }
+
+  // Mapping
+  const contents = conversation.map(item => {
+    return { 
+      role: item.role,
+      parts: [
+        { text : item.message }
+      ]
+    }
+  });
+
+  try {
+    const aiResponse = await ai.models.generateContent({
+      contents, //object property shorthand
+      model: geminiModels.chat
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: aiResponse.text,
+      message: null
+    });
+  } catch(err) {
+    console.log({err});
+    return res.status(err.code ?? 500).json({
+      success: false,
+      data: null,
+      message: err.message
+    });
   }
 });
 
-// 3. Generate Document
-app.post('/generate-from-document', upload.single('document'), async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    const documentBase64 = req.file.buffer.toString('base64');
-    const resp = await ai.models.generateContent({
-      contents: [
-        { text: prompt || "Ringkasan dokumen berikut : " },
-        { inlineData: { mimeType: req.file.mimetype, data: documentBase64 } }
-      ],
-      model: geminiModels.document
-    });
-    res.json({ result: extractText(resp)});
-  } catch (err) {
-    res.status(500).json({ error: err.message});
-  }
-});
-
-// 4. Generate Audio
-app.post('/generate-from-audio', upload.single('audio'), async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    const audioBase64 = req.file.buffer.toString('base64');
-    const resp = await ai.models.generateContent({
-      contents: [
-        { text: prompt || "Trankrip audio berikut : " },
-        { inlineData: { mimeType: req.file.mimetype, data: audioBase64 } }
-      ],
-      model: geminiModels.audio
-    });
-    res.json({ result: extractText(resp)});
-  } catch (err) {
-    res.status(500).json({ error: err.message});
-  }
-});
-
-// async function main() {
-//   const response = await ai.models.generateContent({
-//     model: "gemini-2.5-flash",
-//     contents: "Hai Gemini",
-//   });
-//   console.log(response.text);
-// }
-
-// await main();
-
-// panggil app-nya disini
 const port = 3000;
 
 app.listen(port, () => {
